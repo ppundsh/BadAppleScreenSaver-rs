@@ -1,0 +1,5 @@
+/target/
+/dist/
+*.scr
+*.exe
+*.pdb

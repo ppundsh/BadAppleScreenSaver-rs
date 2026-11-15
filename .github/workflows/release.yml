@@ -1,0 +1,89 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: cargo test --locked
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Prepare dist artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item -Force "target/release/BadAppleScreenSaver-rs.exe" "dist/BadAppleScreenSaver-rs.scr"
+          @'
+          @echo off
+          setlocal
+          title Bad Apple!! rs - Uninstall
+
+          echo [1/3] Checking Administrator privileges...
+          net session >nul 2>&1
+          if %errorlevel% neq 0 (
+              echo Requesting Administrator privileges...
+              powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+              exit /b
+          )
+
+          echo [2/3] Stopping running screensaver processes and removing .scr files...
+          taskkill /F /IM BadAppleScreenSaver-rs.scr >nul 2>&1
+          taskkill /F /IM BadAppleScreenSaver-rs.exe >nul 2>&1
+
+          if exist "%SystemRoot%\System32\BadAppleScreenSaver-rs.scr" del /F /Q "%SystemRoot%\System32\BadAppleScreenSaver-rs.scr"
+          if exist "%SystemRoot%\SysWOW64\BadAppleScreenSaver-rs.scr" del /F /Q "%SystemRoot%\SysWOW64\BadAppleScreenSaver-rs.scr"
+
+          echo [3/3] Clearing Windows screensaver registry entry and config...
+          powershell -NoProfile -Command "$p='HKCU:\Control Panel\Desktop'; $v=(Get-ItemProperty -Path $p -Name 'SCRNSAVE.EXE' -ErrorAction SilentlyContinue).'SCRNSAVE.EXE'; if ($v -and ($v -like '*BadAppleScreenSaver-rs*')) { Remove-ItemProperty -Path $p -Name 'SCRNSAVE.EXE' -ErrorAction SilentlyContinue }"
+          if exist "%APPDATA%\BadAppleScreenSaver" rmdir /S /Q "%APPDATA%\BadAppleScreenSaver"
+
+          echo.
+          echo Uninstall complete!
+          pause
+          '@ | Set-Content -Encoding ASCII "dist/uninstall.bat"
+          Compress-Archive -Force -Path "dist/BadAppleScreenSaver-rs.scr", "dist/uninstall.bat", "README.md", "README.en.md", "README.ja.md" -DestinationPath "dist/BadAppleScreenSaver-rs-win64.zip"
+
+      - name: Resolve release tag
+        id: tag
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            echo "name=${{ inputs.tag }}" >> $env:GITHUB_OUTPUT
+          } else {
+            echo "name=${{ github.ref_name }}" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          name: Bad Apple!! rs ${{ steps.tag.outputs.name }}
+          generate_release_notes: true
+          files: |
+            dist/BadAppleScreenSaver-rs.scr
+            dist/BadAppleScreenSaver-rs-win64.zip
